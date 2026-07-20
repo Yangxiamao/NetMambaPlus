@@ -91,6 +91,10 @@ def get_args_parser():
     parser.add_argument("--class_balance_beta", default=0.999, type=float,)
     parser.add_argument("--ldam", action="store_true",
                         help="whether to use LDAM loss")
+    parser.add_argument("--masque_weight", default=1.0, type=float,
+                        help="Manual weight for the MASQUE class (index 1) in CrossEntropyLoss")
+    parser.add_argument("--masque_threshold", default=0.5, type=float,
+                        help="Probability threshold for predicting MASQUE class")
     parser.add_argument("--data_ratio", default=1.0, type=float,)
     # dataset type
     parser.add_argument("--dataset_type", default="byte", type=str,

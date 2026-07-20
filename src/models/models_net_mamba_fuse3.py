@@ -241,7 +241,7 @@ class NetMamba(nn.Module):
             # byte pre-training
             latent, byte_mask, ids_restore, size_mask, iat_mask = self.forward_encoder(
                 x_byte, x_size, x_iat,
-                byte_mask_ratio, size_mask_ratio, iat_mask_ratio,
+                byte_mask_ratio=byte_mask_ratio, size_mask_ratio=size_mask_ratio, iat_mask_ratio=iat_mask_ratio,
                 if_mask=True) # type: ignore
             size_latent = latent[:, :self.num_size_patches+1, :]  # type: ignore
             iat_latent = latent[:, self.num_size_patches+1: self.num_size_patches+self.num_iat_patches+2, :]  # type: ignore
@@ -258,8 +258,7 @@ class NetMamba(nn.Module):
             # return losses
             return byte_loss, size_loss, iat_loss
         else:
-            latent = self.forward_encoder(x_byte, x_size, x_iat, 0.0, 0.0, 0.0,
-                                          if_mask=False)
+            latent = self.forward_encoder(x_byte, x_size, x_iat, byte_mask_ratio=0.0, size_mask_ratio=0.0, iat_mask_ratio=0.0, if_mask=False)
             byte_h = latent[:, -1, :]  # type: ignore
             size_h = latent[:, self.num_size_patches, :]  # type: ignore
             iat_h = latent[:, self.num_size_patches+self.num_iat_patches+1, :]  # type: ignore

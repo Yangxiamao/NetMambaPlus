@@ -27,17 +27,22 @@ import random
 
 def get_criterion(args, num_sample_per_cls, device):
     # prepare class balance weights
-    effective_num = 1.0 - torch.pow(args.class_balance_beta, num_sample_per_cls)
-    weights = (1.0 - args.class_balance_beta) / effective_num
-    weights = weights / torch.sum(weights) * args.nb_classes
-    weights = weights.to(device)
+    if hasattr(args, 'masque_weight') and args.masque_weight != 1.0 and args.nb_classes == 2:
+        weights = torch.tensor([1.0, args.masque_weight], dtype=torch.float32).to(device)
+    else:
+        effective_num = 1.0 - torch.pow(args.class_balance_beta, num_sample_per_cls)
+        weights = (1.0 - args.class_balance_beta) / effective_num
+        weights = weights / torch.sum(weights) * args.nb_classes
+        weights = weights.to(device)
+
+    custom_weight_active = hasattr(args, 'masque_weight') and args.masque_weight != 1.0
 
     if args.ldam:
         criterion = LDAMLoss(cls_num_list=num_sample_per_cls.tolist(), 
                             device=device,
-                            weight=weights if args.class_balance else None,
+                            weight=weights if (args.class_balance or custom_weight_active) else None,
                             label_smoothing=args.smoothing)
-    elif args.class_balance:
+    elif args.class_balance or custom_weight_active:
         criterion = torch.nn.CrossEntropyLoss(weight=weights, label_smoothing=args.smoothing)
     elif args.smoothing > 0.:
         criterion = torch.nn.CrossEntropyLoss(label_smoothing=args.smoothing)
@@ -85,6 +90,7 @@ def main(args):
     ))
 
     if args.eval:
+        data_loader_test, _ = get_data_loader(args, os.path.join(args.data_path, "data-test.json"))
         best_checkpoint = torch.load(os.path.join(args.ckpt_dir, "checkpoint-best.pth"), map_location='cpu')
         msg = model.load_state_dict(best_checkpoint['model'], strict=False)
         print(msg)

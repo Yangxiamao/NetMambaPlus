@@ -222,8 +222,12 @@ def evaluate(data_loader: DataLoader, model: torch.nn.Module, device, args,
         targets = inputs["targets"]
         loss = criterion(logits, targets)
         loss_all.append(loss.item())
-        _, pred = logits.topk(1, 1, True, True)
-        pred = pred.t()
+        if hasattr(args, 'masque_threshold') and args.nb_classes == 2 and args.masque_threshold != 0.5:
+            probs = torch.softmax(logits, dim=-1)
+            pred = (probs[:, 1] > args.masque_threshold).long().unsqueeze(0)
+        else:
+            _, pred = logits.topk(1, 1, True, True)
+            pred = pred.t()
         if return_logits:
             logits_all.extend(logits.cpu().tolist())
         pred_all.extend(pred[0].cpu())
@@ -282,8 +286,12 @@ def evaluate_per_class(data_loader: DataLoader, model: torch.nn.Module, device, 
         with torch.cuda.amp.autocast():
             logits = forward_model(model, inputs)["logits"]
         targets = inputs["targets"]
-        _, pred = logits.topk(1, 1, True, True)
-        pred = pred.t()
+        if hasattr(args, 'masque_threshold') and args.nb_classes == 2 and args.masque_threshold != 0.5:
+            probs = torch.softmax(logits, dim=-1)
+            pred = (probs[:, 1] > args.masque_threshold).long().unsqueeze(0)
+        else:
+            _, pred = logits.topk(1, 1, True, True)
+            pred = pred.t()
         for i in range(len(targets)):
             label = targets[i].item()
             total_preds[label].append(pred[0][i].cpu().item())

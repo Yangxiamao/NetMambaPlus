@@ -4,8 +4,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(parent_dir, "models")
 sys.path.append(model_path)
 
-from models import (models_net_trans, models_net_mamba,
-                     models_net_trans_fuse3, models_net_mamba_fuse3)
+from models import (models_net_trans, models_net_mamba, models_net_mamba_fuse3)
 
     
 def get_model_source(args):

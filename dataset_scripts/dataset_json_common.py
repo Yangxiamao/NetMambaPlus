@@ -6,6 +6,7 @@ import numpy as np
 import scapy.all as scapy
 from tqdm import tqdm
 from typing import Callable, Union
+from functools import partial
 
 
 def find_files(data_path: str, extension: str=".pcap"):
