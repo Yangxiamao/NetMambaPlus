@@ -1,3 +1,4 @@
+import math
 import random
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from torchvision import transforms
@@ -137,8 +138,54 @@ def str_to_arr_with_mask(string, max_len=50, pad_value=0.):
     return arr, pad_mask
 
 
+##### IAT (inter-arrival time) value encoding #####
+# Both `sizes` and `intervals` are fed to FixedCosineEmbed, which is the standard
+# sinusoidal encoding (frequencies 1 ~ 1e-4) designed for *integer positions* in
+# roughly [0, 10000]. Shifted sizes land in [0, 2*MTU] and fit that domain well.
+#
+# `sigmoid_log` (the original upstream encoding) maps [0, inf) into [0.5, 1.0] via
+# f(x) = (1+x)/(2+x). Its slope at x->0 is only 1/4, so the sub-millisecond region is
+# almost completely flattened: moving the encoded value by 0.01 requires the IAT to
+# differ by ~41 ms. On the MASQUE-vs-Direct dataset the class-discriminative signal
+# sits at the *hundred-microsecond* scale, which after encoding spans 6.4e-06 --
+# 0.0014% of the observed value range. All 20 tokens then receive near-identical
+# embeddings and the timing channel is effectively dead before layer 1.
+#
+# `log10_decade` instead maps the IAT to log10 seconds scaled to 100 units per decade:
+#     v = clip((log10(max(x, 1e-7)) + 7) * 100, 0, 1000)
+# so 1us -> 100, 10us -> 200, 100us -> 300, 1ms -> 400, ... 10s -> 800, pad -> 1000.
+# The realised range on our data is [0, 845] (matching the integer domain the cosine
+# embedding expects) and the class gap grows to 0.76% of the span (~540x).
+INTERVAL_ENCODINGS = ("sigmoid_log", "log10_decade")
+
+IAT_LOG_FLOOR = 1e-7      # 0.1 us; also where exact-zero IATs (first packet) land
+IAT_LOG_OFFSET = 7.0      # so that IAT == IAT_LOG_FLOOR maps to 0
+IAT_LOG_SCALE = 100.0     # units per decade
+IAT_PAD_VALUE = 1000.0    # out-of-range sentinel for padded positions
+
+
+def encode_intervals(intervals, encoding="sigmoid_log"):
+    """Encode raw IATs (seconds, may contain 0 and float('inf') for padding).
+
+    `intervals` is expected to already be padded with float('inf').
+    """
+    if encoding == "sigmoid_log":
+        return [1 / (1 + 1 / (1 + x)) for x in intervals] # sigmoid(log(1 + x))
+    if encoding == "log10_decade":
+        out = []
+        for x in intervals:
+            if not math.isfinite(x): # padded position
+                out.append(IAT_PAD_VALUE)
+                continue
+            v = (math.log10(max(x, IAT_LOG_FLOOR)) + IAT_LOG_OFFSET) * IAT_LOG_SCALE
+            out.append(min(max(v, 0.0), IAT_PAD_VALUE))
+        return out
+    raise ValueError(f"Unknown interval encoding: {encoding}")
+
+
 def process_uni_flow_data(data: list,
-                          num_packet, header_len, payload_len, seq_len):
+                          num_packet, header_len, payload_len, seq_len,
+                          interval_encoding="sigmoid_log"):
     idx2label = {}
     for idx, item in enumerate(data):
         byte_data, byte_pad_mask = string_list_to_arr_with_mask(item["data"], num_string=num_packet, 
@@ -146,7 +193,7 @@ def process_uni_flow_data(data: list,
         sizes, size_pad_mask = str_to_arr_with_mask(item["sizes"], max_len=seq_len, pad_value=PAD_ID) # sizes of uni-flows
         sizes = [0 if x < 0 else MTU if x > MTU else x for x in sizes] # shift to [0, MTU]
         iats, iat_pad_mask = str_to_arr_with_mask(item["intervals"], max_len=seq_len, pad_value=float("inf")) # intervals of uni-flows
-        iats = list(map(lambda x: 1 / (1 + 1 / (1 + x)), iats)) # sigmoid(log(1 + x))
+        iats = encode_intervals(iats, interval_encoding)
         if item["label"] not in idx2label:
             idx2label[item["label"]] = item["name"]
         data[idx] = {
@@ -162,7 +209,8 @@ def process_uni_flow_data(data: list,
     return data, idx2label
 
 
-def process_bi_flow_data(data: list, num_packet, num_packet_byte, seq_len, size_key):
+def process_bi_flow_data(data: list, num_packet, num_packet_byte, seq_len, size_key,
+                         interval_encoding="sigmoid_log"):
     idx2label = {}
     for idx, item in enumerate(data):
         item["data"] = string_list_to_arr(item["data"], num_string=num_packet, string_len=num_packet_byte)
@@ -177,7 +225,7 @@ def process_bi_flow_data(data: list, num_packet, num_packet_byte, seq_len, size_
             raise ValueError(f"Unknown size key: {size_key}")
 
         intervals = str_to_arr(item["intervals"], max_len=seq_len, pad_value=float("inf")) # intervals of uni-flows
-        intervals = list(map(lambda x: 1 / (1 + 1 / (1 + x)), intervals)) # sigmoid(log(1 + x))
+        intervals = encode_intervals(intervals, interval_encoding)
         if item["label"] not in idx2label:
             idx2label[item["label"]] = item["name"]
         data[idx] = {
@@ -193,7 +241,7 @@ def process_bi_flow_data(data: list, num_packet, num_packet_byte, seq_len, size_
 ##### dataset for multimodal features #####
 class ByteSizeIntervalDataset(Dataset):
     def __init__(self, path_or_data: Union[str, list], num_packet=5, num_packet_byte=320, transform=None, ratio=1.0,
-                 seq_len=20, class_idx=None, size_key="sizes"):
+                 seq_len=20, class_idx=None, size_key="sizes", interval_encoding="sigmoid_log"):
         super().__init__()
         if isinstance(path_or_data, str):
             path = path_or_data
@@ -209,7 +257,9 @@ class ByteSizeIntervalDataset(Dataset):
         self.ratio = ratio
         self.data = sample_data(self.data, ratio)
         assert size_key in ["sizes", "signed_sizes"], f"Unknown size key: {size_key}"
-        self.data, self.idx2label = process_bi_flow_data(self.data, num_packet, num_packet_byte, seq_len, size_key)
+        assert interval_encoding in INTERVAL_ENCODINGS, f"Unknown interval encoding: {interval_encoding}"
+        self.data, self.idx2label = process_bi_flow_data(self.data, num_packet, num_packet_byte, seq_len, size_key,
+                                                        interval_encoding=interval_encoding)
         
         if class_idx is not None:
             self.data = [item for item in self.data if item["label"] == class_idx]
@@ -246,7 +296,8 @@ def build_dataset(args, data_path, ratio=1.0, class_idx=None):
                                 num_packet=args.num_packet, 
                                 num_packet_byte=args.num_packet_byte,
                                 seq_len=args.seq_len, class_idx=class_idx,
-                                ratio=ratio, size_key=args.size_key)
+                                ratio=ratio, size_key=args.size_key,
+                                interval_encoding=getattr(args, "interval_encoding", "sigmoid_log"))
     else:
         raise ValueError(f"Unknown dataset type: {args.dataset_type}")
     return dataset
@@ -256,7 +307,8 @@ def get_data_loader(args, data_path, data_ratio=1.0,
                     batch_size=None, random_sampler=False,
                     class_idx=None):
     dataset = build_dataset(args, data_path, ratio=data_ratio, class_idx=class_idx)
-    print(f"Dataset: {dataset}, type: {args.dataset_type}, size_key: {args.size_key}, ratio: {data_ratio}")
+    print(f"Dataset: {dataset}, type: {args.dataset_type}, size_key: {args.size_key}, "
+          f"interval_encoding: {getattr(args, 'interval_encoding', 'sigmoid_log')}, ratio: {data_ratio}")
     if random_sampler:
         sampler = RandomSampler(dataset)
     else:

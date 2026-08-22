@@ -107,6 +107,13 @@ def get_args_parser():
     parser.add_argument("--size_key", default="sizes", type=str,
                         choices=["sizes", "signed_sizes"],
                         help="key to use for size data, either 'sizes' or 'signed_sizes'")
+    parser.add_argument("--interval_encoding", default="sigmoid_log", type=str,
+                        choices=["sigmoid_log", "log10_decade"],
+                        help="value encoding for IAT before the cosine embedding. "
+                             "'sigmoid_log' is the original (1+x)/(2+x), which has almost no "
+                             "resolution below 1 ms; 'log10_decade' maps to log10 seconds at "
+                             "100 units per decade, matching the integer domain the cosine "
+                             "embedding was designed for")
     # sanity check for loading pre-trained model
     parser.add_argument("--train_from_scratch", action="store_true",
                         help="whether to train the model from scratch without loading pre-trained weights")
